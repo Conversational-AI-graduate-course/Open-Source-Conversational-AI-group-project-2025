@@ -5,8 +5,6 @@ This repository contains a Python-based environment for interacting with the **F
 
 ## Project Structure
 ```
-```
-```
 project-root/
 │
 ├── src/

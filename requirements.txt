@@ -1,0 +1,4 @@
+furhat-realtime-api
+websockets
+openai
+python-dotenv
