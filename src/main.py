@@ -63,7 +63,12 @@ def demo_instruct_faces(furhat: FurhatClient, pause_after_each: float = 0.2, int
 
     messages = [{"role": "developer", "content": system_prompt}]
 
+    furhat.request_voice_config('Danielle-Neural (en-US) - Amazon Polly')
+
     furhat.request_attend_user()
+
+
+
     robot_utt = question
     model = "gpt-3.5-turbo"
 
@@ -130,7 +135,7 @@ if __name__ == "__main__":
 
     furhat = FurhatClient(host=args.host, auth_key=args.auth_key)
     furhat.set_logging_level(logging.INFO)
-    
+
     try:
         furhat.connect()
     except Exception as e:
