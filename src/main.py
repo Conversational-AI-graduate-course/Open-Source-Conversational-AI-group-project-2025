@@ -63,7 +63,6 @@ def demo_instruct_faces(furhat: FurhatClient, pause_after_each: float = 0.2, int
 
     messages = [{"role": "developer", "content": system_prompt}]
 
-    furhat.request_voice_config('Danielle-Neural (en-US) - Amazon Polly')
 
     furhat.request_attend_user()
 
@@ -136,12 +135,15 @@ if __name__ == "__main__":
     furhat = FurhatClient(host=args.host, auth_key=args.auth_key)
     furhat.set_logging_level(logging.INFO)
 
+
     try:
         furhat.connect()
     except Exception as e:
         print(f"Failed to connect to Furhat on {args.host}.")
         raise SystemExit(0)
     
+    furhat.request_voice_config('Danielle-Neural (en-US) - Amazon Polly')
+
     # Demo show facial expressions ----
 
     if args.demo_show_faces:
