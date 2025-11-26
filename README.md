@@ -8,6 +8,7 @@ This repository contains a Python-based environment for interacting with the **F
 project-root/
 │
 ├── src/
+│   └── demo.py              # Facial expression demos
 │   └── main.py              # Entrypoint script
 │
 ├── requirements.txt
@@ -148,10 +149,6 @@ docker run --rm -it furhat-app python -c "import furhat; print('Furhat OK')"
 
 ---
 
-```
-
----
-
 ### 5. Stopping Containers
 
 If you ever start a container without `--rm`, list running containers:
@@ -180,3 +177,4 @@ Feel free to open issues, suggest improvements, or submit PRs.
 * Example Python code from Furhat:
   [https://github.com/FurhatRobotics/realtime-api-examples/tree/main/python](https://github.com/FurhatRobotics/realtime-api-examples/tree/main/python)
 * Docker documentation: [https://docs.docker.com/](https://docs.docker.com/)
+* OpenAI API (Chat Completion): [https://platform.openai.com/docs/api-reference/chat/create](https://platform.openai.com/docs/api-reference/chat/create)
