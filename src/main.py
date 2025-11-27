@@ -37,8 +37,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Furhat robot IP address")
     parser.add_argument("--auth_key", type=str, default=None, help="Authentication key for Realtime API")
-    parser.add_argument("--demo_show_faces", action="store_true", help="Run a show facial-expression demo and exit")
-    parser.add_argument("--demo_instruct_faces", action="store_true", help="Run a instruct facial-expression demo")
     args = parser.parse_args()
 
     load_dotenv(override=True)
@@ -176,7 +174,7 @@ Hints: {game_state['hints']}
                 furhat.request_speak_text(robot_utt)
                 break
 
-        # --- After-game question ---
+        # Outside game loop: play again?
         time.sleep(1.0)
         furhat.request_speak_text("Would you like to play again? Say yes to continue or no to stop.")
         user_utt = furhat.request_listen_start().lower()
