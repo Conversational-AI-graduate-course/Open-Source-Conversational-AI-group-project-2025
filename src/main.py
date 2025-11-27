@@ -104,7 +104,6 @@ Game state:
             response = openai.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.2, # can be 0-2 w/ default of 1
             )
             robot_utt = response.choices[0].message.content.strip()
 
