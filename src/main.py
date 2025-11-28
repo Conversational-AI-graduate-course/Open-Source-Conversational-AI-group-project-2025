@@ -172,6 +172,7 @@ class Game:
         try:
             cls.furhat_client = FurhatClient(host=host, auth_key=auth_key)
             cls.furhat_client.connect()
+            cls.furhat_client.request_voice_config('Danielle-Neural (en-US) - Amazon Polly')
             print("[log] Connected to Furhat (via Realtime API)")
         except Exception:
             print("[error] Failed to connect to Furhat.")
