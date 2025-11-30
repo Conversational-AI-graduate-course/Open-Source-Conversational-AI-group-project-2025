@@ -29,6 +29,7 @@ import json
 DEFAULT_LLM = "gpt-3.5-turbo"
 GUESS_THRESHOLD = 0.8   # Furhat will guess when it thinks his guess has 80%+ chance of succeeding.
 MAX_TURNS = 15
+MIN_QUESTIONS_BEFORE_GUESS = 3
 PROMPTS = {
     "SYSTEM": f"""
         You are playing the “Who Am I?” game with a human user.
@@ -50,6 +51,10 @@ PROMPTS = {
         - Adjust 'likelihood' values as you gain more evidence.
         - Avoid keeping all likelihood values at 0.0; they should usually sum to around 1.0.
         - Do NOT use placeholder names like "N/A", "unknown", "none", or similar.
+        6) The "name" field MUST always be a specific, well-known individual character
+        (e.g., "Albert Einstein", "Harry Potter") and NEVER a vague description or
+        category like "a human", "human character", "a person", "an animal", etc.
+        If you are unsure, still propose specific candidates instead of categories.
 
         Never include explanations outside the JSON. Never include trailing text.
     """,
@@ -77,7 +82,7 @@ PROMPTS = {
         You MUST interpret the user's reply and output a JSON object ONLY, with these keys:
         - "is_yes": boolean (True if the user clearly says the robot's statement/guess is correct or answers 'yes')
         - "is_no": boolean (True if the user clearly says 'no' or that the robot is wrong)
-        - "wants_hint": boolean (True if the user is explicitly asking for a hint or more help)
+        - "wants_hint": boolean (always set to False as this feature is under construction)
         - "wants_end": boolean (True if the user wants to stop the game or end the interaction)
         - "is_ready": boolean (True if the user indicates they have picked a character and are ready to start, e.g. 'ready', 'I am ready', 'done', 'okay, I picked one')
 
@@ -341,7 +346,20 @@ class Game:
         raw_candidates = data.get("most_likely") or []
 
         cleaned_candidates = []
-        placeholder_names = {"", "n/a", "na", "none", "unknown", "?", "no character"}
+        placeholder_names = {
+            "",
+            "n/a",
+            "na",
+            "none",
+            "unknown",
+            "?",
+            "no character",
+            "human character",
+            "fictional character",
+            "real person",
+            "human",
+            "person",
+        }
         if isinstance(raw_candidates, list):
             for item in raw_candidates[:3]:
                 if not isinstance(item, dict):
@@ -425,7 +443,11 @@ class Game:
             except Exception:
                 top_likelihood = 0.0
 
-        if top_likelihood >= GUESS_THRESHOLD and turn_type not in ("guess", "end"):
+        if (
+            top_likelihood >= GUESS_THRESHOLD
+            and turn_type not in ("guess", "end")
+            and question_count >= MIN_QUESTIONS_BEFORE_GUESS
+        ):
             return nr + 1, "guess"
 
         # Force final guess
