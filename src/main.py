@@ -9,6 +9,8 @@ import os
 import argparse
 import time
 import json
+import random
+import threading
 
 
 # Quick overview:
@@ -25,11 +27,11 @@ import json
 #     - Game._decide_next_turn(): early-guess logic, MAX_TURNS cap, and "ready" handling
 #     - Game.run(): main loop starting in "start" mode and running turns until "end", then says goodbye
 # - Run section (CLI):
-#     - Parses optional --host, --auth_key, --model and calls Game.run(...)
+#     - Parses optional --host, --auth_key, --model and calls Game.run...
 
 
 # Game settings
-DEFAULT_LLM = "gpt-3.5-turbo"
+DEFAULT_LLM = "gpt-4o-mini"   # low-latency
 GUESS_THRESHOLD = 0.8   # Furhat will guess when it thinks his guess has 80%+ chance of succeeding.
 MAX_TURNS = 15
 MIN_QUESTIONS_BEFORE_GUESS = 3
@@ -96,14 +98,37 @@ PROMPTS = {
         4) 'is_ready' is only for the initial phase when the robot asks the user to think of a character.
     """
 }
+BACKCHANNELS = [
+    "Hm.",
+    "Okay.",
+    "Interesting.",
+    "Good to know.",
+    "Got it.",
+    "Alright.",
+    "I see.",
+    "Ah, okay.",
+    "Nice.",
+    "Thanks.",
+    "Understood.",
+    "Makes sense.",
+    "Gotcha.",
+    "Cool.",
+    "Right.",
+    "Fair enough.",
+    "That helps.",
+    "Good hint.",
+    "Let me think.",
+    "Alright, noted.",
+]
 
 
 def create_working_memory():
     """Working memory for the game."""
     return {
-        "turns": {},          # "Turn 1": {"furhat_question": "", "user_answer": "", "most_likely_snapshot": [...]}
-        "question_count": 0,  # how many question-type turns we've done
-        "most_likely": [],    # current top candidates
+        "turns": {},                # "Turn 1": {"furhat_question": "", "user_answer": "", "most_likely_snapshot": [...]}
+        "question_count": 0,        # how many question-type turns we've done
+        "most_likely": [],          # current top candidates
+        "start_intro_done": False,  # LLM intro was already delivered once
     }
 
 
@@ -117,22 +142,24 @@ class InteractionLogger:
 
         ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         self.path = os.path.join(logs_dir, f"log-{ts}.txt")
-        self.file = open(self.path, "a", encoding="utf-8", buffering=1)
+        self.file = open(self.path, "a", encoding="utf-8", buffering=4096)
         self.t0 = time.monotonic()
+        self._line_count = 0
 
     def log_line(self, text: str):
         elapsed = int(time.monotonic() - self.t0)
         stamp = f"[{elapsed // 60:02d}:{elapsed % 60:02d}]"
         try:
             self.file.write(f"{stamp} {text.rstrip()}\n")
-            self.file.flush()
-            os.fsync(self.file.fileno())
+            self._line_count += 1
+            if self._line_count % 10 == 0:
+                self.file.flush()
         except Exception:
             pass
 
     def log_turn(self, turn_key: str, payload: dict):
-        pretty = json.dumps(payload, ensure_ascii=False, indent=2)
-        self.log_line(f"{turn_key}:\n{pretty}")
+        compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self.log_line(f"{turn_key}:{compact}")
 
     def close(self):
         try:
@@ -153,13 +180,17 @@ class Game:
     model = DEFAULT_LLM
     working_memory = create_working_memory()
     logger = None
+    next_question_mode = False
+    next_question_cached = None
 
     @classmethod
-    def init(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None):
+    def init(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None, next_question=False):
         load_dotenv(override=True)
         cls.model = model
         cls.working_memory = create_working_memory()
         cls.logger = InteractionLogger()
+        cls.next_question_mode = bool(next_question)
+        cls.next_question_cached = None
 
         # --- LLM ---
         if model == "gemini":
@@ -201,6 +232,24 @@ class Game:
         return True
 
     @classmethod
+    def _get_normal_prompt(cls) -> str:
+        base = PROMPTS["NORMAL"]
+        if cls.next_question_mode:
+            # Ask the LLM to also propose a follow-up question in "next_question"
+            return (
+                base
+                + "\n\nAdditionally, in the same JSON object, add a field \"next_question\" "
+                  "containing another yes-or-no question you could ask immediately after this one, "
+                  "following the same rules as \"response\". Leave it empty or omit it only if you "
+                  "truly cannot think of a sensible follow-up."
+                  "Make sure these two questions are quite different so the likelihood that the answer "
+                  "to the first question makes the next_question irrelevant is decreased."
+                  "Also, do not repeat any question that has already been asked earlier in the game; "
+                  "always focus on a new aspect of the character."
+            )
+        return base
+
+    @classmethod
     def turn(cls, nr: int, turn_type: str = "normal"):
         """
         One game turn:
@@ -213,29 +262,76 @@ class Game:
         turn_type = turn_type.lower()
 
         # 1) select prompt
-        prompt = PROMPTS.get(turn_type.upper(), PROMPTS["NORMAL"])
+        if turn_type == "normal":
+            prompt = cls._get_normal_prompt()
+        else:
+            prompt = PROMPTS.get(turn_type.upper(), PROMPTS["NORMAL"])
+        start_intro_done_before = cls.working_memory.get("start_intro_done", False)
+        llm_json = None
+        if turn_type == "start" and start_intro_done_before:
+            robot_utterance = ""
+            most_likely = cls.working_memory.get("most_likely", [])
+        else:
 
-        # build messages for main LLM
-        messages = [
-            {"role": "system", "content": PROMPTS["SYSTEM"]},
-            {"role": "user", "content": cls._format_memory_blob()},
-            {"role": "user", "content": prompt},
-        ]
+            # build messages for main LLM
+            if turn_type == "normal" and cls.next_question_mode and cls.next_question_cached:
+                # Use pre-cached question for near-instant response.
+                robot_utterance = cls.next_question_cached
+                most_likely = cls.working_memory.get("most_likely", [])
+                llm_json = None
+                cls.next_question_cached = None
+            else:
+                messages = [
+                    {"role": "system", "content": PROMPTS["SYSTEM"]},
+                    {"role": "user", "content": cls._format_memory_blob()},
+                    {"role": "user", "content": prompt},
+                ]
 
-        # 2) call LLM (JSON response)
-        llm_json = cls._call_llm(messages)
+                # 2) call LLM (JSON response)
+                llm_json = cls._call_llm(messages)
 
-        # 3) parse LLM JSON output -> robot utterance + updated most_likely
-        robot_utterance, most_likely = cls._parse_llm_output(llm_json)
+                # 3) parse LLM JSON output -> robot utterance + updated most_likely
+                robot_utterance, most_likely = cls._parse_llm_output(llm_json)
 
-        # 4) Furhat speaks
-        cls._furhat_say(robot_utterance)
+            # 4) Furhat speaks
+            cls._furhat_say(robot_utterance)
+            if turn_type == "start":
+                cls.working_memory["start_intro_done"] = True
 
         # 5) listen to user
+        t_listen_start = time.monotonic()
         user_utterance = cls._furhat_listen()
+        listen_elapsed = time.monotonic() - t_listen_start
+
+        if turn_type == "normal" and (user_utterance or "").strip():
+            cls._furhat_backchannel()   # random backchannel to fill pause answer - new question while starting next function
 
         # 6) LLM interprets user response into structured state
-        user_state = cls._interpret_user(robot_utterance, user_utterance)
+        if turn_type == "start":
+            text = (user_utterance or "").strip()
+            said_ready = "ready" in text.lower()
+            reminder = 'I did not quite get that. Please say "ready" to start the game.'
+            if (listen_elapsed > 10.0) or (text == "") or (not said_ready):
+                cls._furhat_say(reminder)
+                robot_utterance = reminder
+                 
+                user_state = {
+                    "is_yes": False,
+                    "is_no": False,
+                    "wants_hint": False,
+                    "wants_end": False,
+                    "is_ready": False,
+                }
+            else:
+                user_state = {
+                    "is_yes": False,
+                    "is_no": False,
+                    "wants_hint": False,
+                    "wants_end": False,
+                    "is_ready": True,
+                }
+        else:
+            user_state = cls._interpret_user(robot_utterance, user_utterance)
 
         # 7) decide next turn
         next_nr, next_type = cls._decide_next_turn(nr, turn_type, user_state, most_likely)
@@ -260,7 +356,30 @@ class Game:
                 },
             )
 
+        # Prefetch next normal question (optional fast mode)
+        if cls.next_question_mode and next_type == "normal":
+            cls._prefetch_next_question_async()
+
         return next_nr, next_type
+
+    @classmethod
+    def _prefetch_next_question_async(cls):
+        """Prefetch the next normal-turn question in the background for fast start."""
+        def worker():
+            try:
+                messages = [
+                    {"role": "system", "content": PROMPTS["SYSTEM"]},
+                    {"role": "user", "content": cls._format_memory_blob()},
+                    {"role": "user", "content": cls._get_normal_prompt()},
+                ]
+                data = cls._call_llm(messages)
+                question, _ = cls._parse_llm_output(data)
+                if isinstance(question, str) and question.strip():
+                    cls.next_question_cached = question.strip()
+            except Exception as e:
+                if cls.logger:
+                    cls.logger.log_line("[warn] prefetch failed: " + repr(e))
+        threading.Thread(target=worker, daemon=True).start()
 
     @classmethod
     def _format_memory_blob(cls) -> str:
@@ -292,6 +411,32 @@ class Game:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _coerce_json(text: str):
+        """
+        Function generated by AI to prevent script crash when LLM does not output in JSON format.
+        """
+        if not isinstance(text, str):
+            return None
+        s = text.strip().lstrip("\ufeff")
+        if s.startswith("```"):
+            nl = s.find("\n")
+            s = s[nl+1:] if nl != -1 else s
+            if s.endswith("```"):
+                s = s[:-3]
+        s = re.sub(r",(\s*[\}\]])", r"\1", s)
+        try:
+            return json.loads(s)
+        except Exception:
+            m = re.search(r"\{.*\}", s, flags=re.S)
+            if m:
+                cand = re.sub(r",(\s*[\}\]])", r"\1", m.group(0))
+                try:
+                    return json.loads(cand)
+                except Exception:
+                    return None
+            return None
+
     @classmethod
     def _call_llm(cls, messages):
         """Call the main game LLM and force JSON output."""
@@ -309,9 +454,13 @@ class Game:
                 }
             )
 
-            # Gemini returns already-decoded JSON text
-            print(response.text)
-            return json.loads(response.text)
+            # More defensive approach when JSON output fails
+            data = Game._coerce_json(response.text)
+            if not isinstance(data, dict):
+                if cls.logger:
+                    cls.logger.log_line("[warn] Gemini non-JSON; falling back. Raw=" + repr(response.text[:500]))
+                data = {"response": "Oh no, something went wrong.", "most_likely": []}
+            return data
         else:
             completion = cls.llm_client.chat.completions.create(
                 model=cls.model,
@@ -319,13 +468,73 @@ class Game:
                 response_format={"type": "json_object"},
                 temperature=0.3,
             )
-            content = completion.choices[0].message.content
-            data = json.loads(content)
+            choice = completion.choices[0]
+            content = (choice.message.content or "").strip()
+            
+            # First try strict JSON parse
+            data = None
+            try:
+                data = json.loads(content)
+            except Exception:
+                # Fallback
+                data = Game._coerce_json(content)
+            
+            if not isinstance(data, dict):
+                if cls.logger:
+                    fr = getattr(choice, "finish_reason", None)
+                    cls.logger.log_line(
+                        f"[warn] OpenAI non-JSON (finish_reason={fr}); raw content="
+                        + repr(content[:500])
+                    )
+                data = {"response": "Oh no, something went wrong.", "most_likely": []}
+            
             return data
 
     @classmethod
     def _interpret_user(cls, robot_utterance: str, user_utterance: str) -> dict:
-        """Use the LLM as a classifier to interpret the user's reply."""
+        """Use a fast local classifier first, then LLM only if ambiguous."""
+        default_state = {
+            "is_yes": False,
+            "is_no": False,
+            "wants_hint": False,
+            "wants_end": False,
+            "is_ready": False,
+        }
+        
+        text = (user_utterance or "").strip()
+        lower = text.lower()
+        
+        # Fast path by main.py
+        local_state = dict(default_state)
+        if text:
+            yes_words = (
+                "yes", "yeah", "yep", "correct", "right", "exactly",
+                "you are right", "you're right", "thats right", "that's right",
+                "sure", "of course",
+            )
+            no_words = (
+                "no", "nope", "nah", "not really", "incorrect",
+                "wrong", "don't think so", "dont think so",
+            )
+            end_words = (
+                "stop", "quit", "exit", "end the game", "end game",
+                "goodbye", "bye", "that's enough", "thats enough",
+            )
+            if any(w in lower for w in yes_words):
+                local_state["is_yes"] = True
+            if any(w in lower for w in no_words):
+                local_state["is_no"] = True
+            if any(w in lower for w in end_words):
+                local_state["wants_end"] = True
+            if "ready" in lower:
+                local_state["is_ready"] = True
+        
+        true_flags = [k for k, v in local_state.items() if v]
+        # If we got a clear signal (not both yes and no), return without an LLM call.
+        if true_flags and not (local_state["is_yes"] and local_state["is_no"]):
+            return local_state
+        
+        # Slow path by LLM (fallback)
         messages = [
             {"role": "system", "content": PROMPTS["CLASSIFY"]},
             {
@@ -336,19 +545,12 @@ class Game:
                 ),
             },
         ]
-        default_state = {
-            "is_yes": False,
-            "is_no": False,
-            "wants_hint": False,
-            "wants_end": False,
-            "is_ready": False,
-        }
-
+        
         if cls.model == "gemini":
             prompt = "\n".join(
                 f"{m['role'].upper()}: {m['content']}" for m in messages
             )
-
+            
             response = cls.llm_client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
@@ -358,23 +560,22 @@ class Game:
                 }
             )
             content = response.text.strip()
-            if content.startswith("```"): # remove ```json / ``` fences
-                first_newline = content.find('\n')
-                content = content[first_newline+1:]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = re.sub(r",(\s*[\}\]])", r"\1", content)
         else:
             completion = cls.llm_client.chat.completions.create(
                 model=cls.model,
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=0.0,
+                max_tokens=50,
             )
-            content = completion.choices[0].message.content
-
-        data = json.loads(content)
-
+            content = (completion.choices[0].message.content or "").strip()
+        
+        data = Game._coerce_json(content)
+        if not isinstance(data, dict):
+            if cls.logger:
+                cls.logger.log_line("[warn] Classifier non-JSON; Raw=" + repr((content or "")[:500]))
+            data = {}
+        
         state = dict(default_state)
         if isinstance(data, dict):
             for k in state.keys():
@@ -447,6 +648,15 @@ class Game:
     def _furhat_say(cls, text: str):
         print("Furhat:", text)
         cls.furhat_client.request_speak_text(text)
+    
+    @classmethod
+    def _furhat_backchannel(cls):
+        """Quick acknowledgement after the user's answer to reduce perceived latency."""
+        try:
+            phrase = random.choice(BACKCHANNELS)
+        except IndexError:
+            return
+        cls._furhat_say(phrase)
 
     @classmethod
     def _furhat_listen(cls) -> str:
@@ -522,8 +732,8 @@ class Game:
         }
 
     @classmethod
-    def run(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None):
-        ok = cls.init(model=model, host=host, auth_key=auth_key)
+    def run(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None, next_question=False):
+        ok = cls.init(model=model, host=host, auth_key=auth_key, next_question=next_question)
         if not ok:
             return
 
@@ -550,10 +760,12 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--auth_key", type=str, default=os.getenv("FURHAT_AUTH_KEY"))
     parser.add_argument("--model", type=str, default=DEFAULT_LLM)
+    parser.add_argument("--next_question", action="store_true")
     args = parser.parse_args()
 
     Game.run(
-        model = args.model,
-        host = args.host,
-        auth_key = args.auth_key,
+        model=args.model,
+        host=args.host,
+        auth_key=args.auth_key,
+        next_question=args.next_question,
     )
