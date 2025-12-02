@@ -1,8 +1,10 @@
 # Imports
 from openai import OpenAI
-import os
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from furhat_realtime_api import FurhatClient
+import os
 import argparse
 import time
 import json
@@ -145,7 +147,7 @@ class Game:
     Playing Who Am I? using Furhat robot fueled by LLM.
     """
 
-    openai_client = None
+    llm_client = None
     furhat_client = None
     model = DEFAULT_LLM
     working_memory = create_working_memory()
@@ -159,19 +161,28 @@ class Game:
         cls.logger = InteractionLogger()
 
         # --- LLM ---
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            print("[error] OPENAI_API_KEY missing.")
-            print("[tip] Create a .env with: OPENAI_API_KEY=sk-...")
-            print("[tip] Or export it in your shell before running.")
-            return False
-        try:
-            cls.openai_client = OpenAI(api_key=api_key)
-            print(f'[log] Connected to "{model}" (via OpenAI API)')
-        except Exception:
-            print("[error] Failed to initialize OpenAI client.")
-            print("[tip] Verify your OPENAI_API_KEY and network connectivity.")
-            return False
+        if model == "gemini":
+            try:
+                cls.llm_client = genai.Client()
+                print(f'[log] Connected to "{model}" (via Gemini API)')
+            except Exception:
+                print("[error] Failed to initialize Gemini client.")
+                print("[tip] Verify your GEMINI_API_KEY and network connectivity.")
+                return False
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                print("[error] OPENAI_API_KEY missing.")
+                print("[tip] Create a .env with: OPENAI_API_KEY=sk-...")
+                print("[tip] Or export it in your shell before running.")
+                return False
+            try:
+                cls.llm_client = OpenAI(api_key=api_key)
+                print(f'[log] Connected to "{model}" (via OpenAI API)')
+            except Exception:
+                print("[error] Failed to initialize OpenAI client.")
+                print("[tip] Verify your OPENAI_API_KEY and network connectivity.")
+                return False
 
         # --- Furhat ---
         try:
@@ -283,15 +294,32 @@ class Game:
     @classmethod
     def _call_llm(cls, messages):
         """Call the main game LLM and force JSON output."""
-        completion = cls.openai_client.chat.completions.create(
-            model=cls.model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.3,
-        )
-        content = completion.choices[0].message.content
-        data = json.loads(content)
-        return data
+        if cls.model == "gemini":
+            # Convert OpenAI-style messages into a single string
+            prompt = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in messages
+            )
+
+            response = cls.llm_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json"
+                }
+            )
+
+            # Gemini returns already-decoded JSON text
+            return json.loads(response.text)
+        else:
+            completion = cls.llm_client.chat.completions.create(
+                model=cls.model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.3,
+            )
+            content = completion.choices[0].message.content
+            data = json.loads(content)
+            return data
 
     @classmethod
     def _interpret_user(cls, robot_utterance: str, user_utterance: str) -> dict:
@@ -314,7 +342,7 @@ class Game:
             "is_ready": False,
         }
 
-        completion = cls.openai_client.chat.completions.create(
+        completion = cls.llm_client.chat.completions.create(
             model=cls.model,
             messages=messages,
             response_format={"type": "json_object"},
