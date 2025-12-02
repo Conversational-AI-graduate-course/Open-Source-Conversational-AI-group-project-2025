@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from furhat_realtime_api import FurhatClient
+import re
 import os
 import argparse
 import time
@@ -309,6 +310,7 @@ class Game:
             )
 
             # Gemini returns already-decoded JSON text
+            print(response.text)
             return json.loads(response.text)
         else:
             completion = cls.llm_client.chat.completions.create(
@@ -342,13 +344,35 @@ class Game:
             "is_ready": False,
         }
 
-        completion = cls.llm_client.chat.completions.create(
-            model=cls.model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
-        content = completion.choices[0].message.content
+        if cls.model == "gemini":
+            prompt = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in messages
+            )
+
+            response = cls.llm_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config={
+                    "temperature": 0.0,
+                    "response_mime_type": "application/json",
+                }
+            )
+            content = response.text.strip()
+            if content.startswith("```"): # remove ```json / ``` fences
+                first_newline = content.find('\n')
+                content = content[first_newline+1:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = re.sub(r",(\s*[\}\]])", r"\1", content)
+        else:
+            completion = cls.llm_client.chat.completions.create(
+                model=cls.model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+            content = completion.choices[0].message.content
+
         data = json.loads(content)
 
         state = dict(default_state)
