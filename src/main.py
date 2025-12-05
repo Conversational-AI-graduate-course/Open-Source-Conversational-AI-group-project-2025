@@ -35,6 +35,7 @@ DEFAULT_LLM = "gpt-4o-mini"   # low-latency
 GUESS_THRESHOLD = 0.8   # Furhat will guess when it thinks his guess has 80%+ chance of succeeding.
 MAX_TURNS = 15
 MIN_QUESTIONS_BEFORE_GUESS = 3
+BACKCHANNEL_PROB = 0.5
 PROMPTS = {
     "SYSTEM": f"""
         You are playing the “Who Am I?” game with a human user.
@@ -121,7 +122,26 @@ BACKCHANNELS = [
     "Alright, noted.",
 ]
 
+# End messages
+class GameEndReason:
+    USER_QUIT = "user_quit"
+    CORRECT_GUESS = "correct_guess"
+    MAX_QUESTIONS_REACHED = "max_questions_reached"
 
+# Change messages here
+def get_end_message(end_reason):
+    """Return contextual end message based on how the game ended."""
+    if end_reason == GameEndReason.CORRECT_GUESS:
+        return "Great, I guessed correctly! Thank you for playing!"
+    elif end_reason == GameEndReason.MAX_QUESTIONS_REACHED:
+        return "Oh no! I've used all my questions and couldn't guess correctly."
+    else:  # USER_QUIT
+        return "Thank you for playing the Who am I game with me. Goodbye!"
+    
+def get_replay_message():
+    return "Would you like to play another round?"
+
+#Memory
 def create_working_memory():
     """Working memory for the game."""
     return {
@@ -131,7 +151,7 @@ def create_working_memory():
         "start_intro_done": False,  # LLM intro was already delivered once
     }
 
-
+# Logging
 class InteractionLogger:
     """File logger for prompts, outputs, and user replies."""
 
@@ -191,6 +211,7 @@ class Game:
         cls.logger = InteractionLogger()
         cls.next_question_mode = bool(next_question)
         cls.next_question_cached = None
+        cls.game_end_reason = None
 
         # --- LLM ---
         if model == "gemini":
@@ -304,7 +325,8 @@ class Game:
         listen_elapsed = time.monotonic() - t_listen_start
 
         if turn_type == "normal" and (user_utterance or "").strip():
-            cls._furhat_backchannel()   # random backchannel to fill pause answer - new question while starting next function
+            if random.random() < BACKCHANNEL_PROB:
+                cls._furhat_backchannel()   # random backchannel to fill pause answer - new question while starting next function
 
         # 6) LLM interprets user response into structured state
         if turn_type == "start":
@@ -680,6 +702,7 @@ class Game:
         question_count = cls.working_memory["question_count"]
 
         if wants_end:
+            cls.game_end_reason = GameEndReason.USER_QUIT
             return nr + 1, "end"
 
         if turn_type == "start":
@@ -690,8 +713,10 @@ class Game:
 
         if turn_type == "guess":
             if is_yes:
+                cls.game_end_reason = GameEndReason.CORRECT_GUESS
                 return nr + 1, "end"
             if question_count >= MAX_TURNS:
+                cls.game_end_reason = GameEndReason.MAX_QUESTIONS_REACHED
                 return nr + 1, "end"
             if wants_hint:
                 return nr + 1, "hint"
@@ -741,13 +766,54 @@ class Game:
         current_type = "start"
 
         try:
-            while current_type != "end":
-                current_turn, current_type = cls.turn(
-                    nr=current_turn,
-                    turn_type=current_type,
-                )
+            # Game loop
+            while True:
+                current_turn = 1
+                current_type = "start"
+                
+                # Single round
+                while current_type != "end":
+                    current_turn, current_type = cls.turn(
+                        nr=current_turn,
+                        turn_type=current_type,
+                    )
 
-            cls._furhat_say("Thanks for playing 'Who Am I?' with me. Bye!")
+                # Say contextual goodbye
+                end_message = get_end_message(cls.game_end_reason)
+                cls._furhat_say(end_message)
+                
+                if cls.game_end_reason == GameEndReason.USER_QUIT:
+                    break
+                
+                # Ask about replay
+                replay_message = get_replay_message()
+                cls._furhat_say(replay_message)
+                
+                # Listen and classify reply
+                user_utt = cls._furhat_listen()
+                user_state = cls._interpret_user(replay_message, user_utt)
+                
+                # Clear ambiguous classification once: ask again if ambiguous
+                if not (user_state.get("is_yes") or user_state.get("is_no") or user_state.get("wants_end")):
+                    clarification = "I didn't catch that. Please say 'yes' to play again or 'no' to quit."
+                    cls._furhat_say(clarification)
+                    user_utt = cls._furhat_listen()
+                    user_state = cls._interpret_user(clarification, user_utt)
+                    
+                # Decide whether to replay
+                if user_state.get("is_yes"):
+                    cls.working_memory = create_working_memory()
+                    cls.working_memory["start_intro_done"] = True
+                    cls.next_question_cached = None
+                    cls.game_end_reason = None
+                    cls._furhat_say("Great! Think of a new character and say 'ready' when you are ready.")
+                    continue
+                else:
+                    cls._furhat_say("Okay, thanks for playing. Goodbye!")
+                    break
+
+
+            
         finally:
             # To make sure log is never cut-off.
             if cls.logger:
