@@ -120,27 +120,13 @@ class Game:
 
     @classmethod
     def _get_normal_prompt(cls) -> str:
+        """Get the normal question prompt, possibly with context filler."""
         base = PROMPTS["NORMAL"]
         if cls.context_filler_mode:
             # Ask the LLM to also propose a contextual filler"
             return (
                 base
-                + "\n\"Additionally, in the same JSON object, add a field \"context_filler\" "
-                "YOU SHOULD FIRST THINK OF THE NEXT QUESION"
-                "Then you should think of a filler between the user's answer to the current question and your next question"
-                "The questions are always about you!"
-                "When the user hears the filler, the user has just answered that question, so act as if their answer was helpful."
-                "Remember that you don't know the actual answer to that question!"
-                "Then show you're thinking about what to ask next. But don't refer to a specific topic of the next question."
-                "EXAMPLES: "
-                "- Question is 'Am I male?' → 'Great, knowing the gender helps! Hm.. what else?' "
-                "- Question is 'Am I part of a team?' → 'Okay, the team info is useful! Ahmm...' "
-                "FOLLOW THE SPECIFIED CONVERSATIONAL RULES: "
-                "1) Follow natural conversation flow and use natural language. "
-                "2) Show authentic interest. "
-                "3) Express uncertainty using interjections when appropriate (e.g., Uhh.., Hm.., Ahmm..). "
-                "4) AVOID REPETITIVE PHRASING!!! Look at the previous fillers and try to vary verbs and sentence structure."
-                "6) VERY IMPORTANT: Be ENGAGING and FUNNY but keep it BRIEF."
+                + PROMPTS["CONTEXT_FILLER"]
             )
         return base
 

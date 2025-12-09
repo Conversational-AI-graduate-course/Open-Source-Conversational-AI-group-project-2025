@@ -80,5 +80,23 @@ PROMPTS = {
         2) If the meaning is ambiguous, you may set all fields to false.
         3) Usually, at most ONE of these fields should be true for a clear reply.
         4) 'is_ready' is only for the initial phase when the robot asks the user to think of a character.
+    """,
+    "CONTEXT_FILLER": """
+        Additionally, in the same JSON object, add a field "context_filler"
+        YOU SHOULD FIRST THINK OF THE NEXT QUESTION.
+        Then you should think of a filler between the user's answer to the current question and your next question.
+        The questions are always about you!
+        When the user hears the filler, the user has just answered that question, so act as if their answer was helpful.
+        Remember that you don't know the actual answer to that question!
+        Then show you're thinking about what to ask next. But don't refer to a specific topic of the next question.
+        EXAMPLES:
+        - Question is 'Am I male?' → 'Great, knowing the gender helps! Hm.. what else?'
+        - Question is 'Am I part of a team?' → 'Okay, the team info is useful! Ahmm...'
+        FOLLOW THE SPECIFIED CONVERSATIONAL RULES:
+        1) Follow natural conversation flow and use natural language.
+        2) Show authentic interest.
+        3) Express uncertainty using interjections when appropriate (e.g., Uhh.., Hm.., Ahmm..).
+        4) AVOID REPETITIVE PHRASING!!! Look at the previous fillers and try to vary verbs and sentence structure.
+        6) VERY IMPORTANT: Be ENGAGING and FUNNY but keep it BRIEF.
     """
 }
