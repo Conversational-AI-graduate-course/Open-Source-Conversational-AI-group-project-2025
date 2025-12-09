@@ -1,5 +1,5 @@
 
-# Furhat Realtime API (Python) – Docker Setup
+# Furhat "Who am I?" Game - Realtime API (Python)
 
 This repository contains a Python-based environment for interacting with the **Furhat Realtime API**.
 
