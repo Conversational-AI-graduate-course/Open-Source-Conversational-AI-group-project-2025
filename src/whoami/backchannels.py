@@ -1,0 +1,23 @@
+class Backchannels():
+    BACKCHANNELS = [
+        "Hm.",
+        "Okay.",
+        "Interesting.",
+        "Good to know.",
+        "Got it.",
+        "Alright.",
+        "I see.",
+        "Ah, okay.",
+        "Nice.",
+        "Thanks.",
+        "Understood.",
+        "Makes sense.",
+        "Gotcha.",
+        "Cool.",
+        "Right.",
+        "Fair enough.",
+        "That helps.",
+        "Good hint.",
+        "Let me think.",
+        "Alright, noted.",
+    ]
