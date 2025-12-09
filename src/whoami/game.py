@@ -1,231 +1,51 @@
 from openai import OpenAI
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
+from enum import Enum
 from furhat_realtime_api import FurhatClient
-import re
+from .prompts import PROMPTS
+from .logger import InteractionLogger
+from .backchannels import BACKCHANNELS
+from dotenv import load_dotenv
 import os
-import argparse
+import re
 import time
 import json
 import random
 import threading
-
-
-# Quick overview:
-# - Game settings:
-#     - DEFAULT_LLM, GUESS_THRESHOLD, MAX_TURNS
-#     - PROMPTS dict with SYSTEM, START, NORMAL, HINT, GUESS, END, CLASSIFY prompts
-# - Working memory:
-#     - create_working_memory(): per-turn Q/A and running most_likely candidates
-# - Logging:
-#     - InteractionLogger: timestamped logs of each turn (LLM input/output + user replies)
-# - Main Game class:
-#     - Game.init(): loads .env, connects OpenAI + Furhat, resets memory and logger
-#     - Game.turn(): one full turn (prompt LLM → Furhat speaks → user listens → LLM classifies user → decide next turn → log)
-#     - Game._decide_next_turn(): early-guess logic, MAX_TURNS cap, and "ready" handling
-#     - Game.run(): main loop starting in "start" mode and running turns until "end", then says goodbye
-# - Run section (CLI):
-#     - Parses optional --host, --auth_key, --model and calls Game.run...
-
-
-# Game settings
-DEFAULT_LLM = "gpt-4o-mini"   # low-latency
-GUESS_THRESHOLD = 0.8   # Furhat will guess when it thinks his guess has 80%+ chance of succeeding.
-MAX_TURNS = 15
-MIN_QUESTIONS_BEFORE_GUESS = 7
-BACKCHANNEL_PROB = 0.5
-PROMPTS = {
-    "SYSTEM": f"""
-        You are playing the “Who Am I” game with a human user by engaging in a conversational interactions.
-        The user has assigned you a secret character (real or fictional).
-        You must guess the character by asking yes-or-no questions or requesting hints.
-        You have at most {MAX_TURNS} questions. Make a guess when you think you know.
-
-        OUTPUT FORMAT RULES (very important):
-        1) ALWAYS respond with a single JSON object and NOTHING ELSE.
-        2) The JSON must have keys "response", "profile", and  "most_likely".
-        3) "response": the single next utterance you will say to the user (question, guess, or comment).
-        4) "profile": a concise summary of CONFIRMED facts about the character gathered so far.
-           Format as a brief list of attributes (e.g., ["Real person", "Male"]).
-           Update this every turn by adding the newly gathered information through questions or hints.
-           Keep it factual and concise. 
-        5) "most_likely": a list of (max 3) candidate characters, ordered from most to least likely.
-           Each item must be an object with:
-            - "name": character name as a short string
-            - "why": short explanation of why the character is a possible canditate.
-            - "likelihood": a number from 0.0 to 1.0 (float) estimating how likely this candidate is correct.
-        6) Your 'most_likely' list must be updated every turn based on ALL previous answers and the profile.
-            CRITICAL UPDATE RULES:
-            - Use the "profile" to guide your candidate selection. 
-            - If ANY candidate in "most_likely" contradicts the profile, REMOVE and REPLACE them immediately.
-            - When generating new candidates, they MUST match ALL attributes in the profile BUT THAT DOES NOT MEAN THAT THEY HAVE A 1.0 LIKELIHOOD.
-            - Each candidate's "why" field should reference specific profile attributes that match there should be NO ATTRIBUTE THAT DOEN'T MATCH.
-            - Your list must ALWAYS contain exactly 3 distinct candidates (or fewer only if you're very confident).
-            - Likelihood represents: "probability this is THE UNIQUE CORRECT ANSWER"
-            - Generic categories (pop singer, actor) apply to THOUSANDS of people, only assign high likelihood when you have UNIQUELY IDENTIFYING information.
-            - The "name" field MUST always be a specific character, NEVER "N/A", "unknown", "TBD", or placeholder text. If you are unsure, still propose specific candidates instead of categories.
-            
-
-        NEVER include explanations outside the JSON. Never include trailing text.
-
-        Follow natural conversation flow, use natural language and show authentic interest and enthusiasm.
-    """,
-    "START": """
-        Greet the user, introduce yourself as "Furhat", a social robot, and explain the rules briefly.
-        Ask them to think of a character for the game.
-        Tell them to say 'I am ready' when they have picked their character.
-    """,
-    "RESTART": """
-        Welcome the user back for another round.
-        Ask them to think of a NEW character for this game.
-        Tell them to say 'I am ready' when they have picked their character.
-        Keep it brief and friendly - they already know how to play.
-    """,
-    "NORMAL": """
-    Ask a yes-or-no question that helps you find out who you are (what character has been assigned to you). 
-    Use the 'profile' to consider what you already know about yourself and what other information you need to reduce possibilities.
-    Ask the question using the format 'Am I ...?' (e.g., Am I a real person?). Just keep it to the question. Don't add anything else.
-    """,
-    "HINT": "Ask the user politely for a hint about the character.",
-    "GUESS": """
-        You are now confident enough to guess.
-        In your JSON 'response', you MUST directly guess a single specific character by name.
-        Example: 'Am I (name of candiadate)?' 
-        Do NOT ask for more general information or categories. Make a direct character guess.
-    """,
-    "CLASSIFY": """
-        You are classifying a human user's short reply in a 'Who Am I' guessing game between a robot and a human.
-
-        The robot and user alternate turns:
-        - The robot asks questions or makes guesses.
-        - The user replies in natural language.
-
-        You MUST interpret the user's reply and output a JSON object ONLY, with these keys:
-        - "is_yes": boolean (True if the user clearly says the robot's statement/guess is correct or answers 'yes')
-        - "is_no": boolean (True if the user clearly says 'no' or that the robot is wrong)
-        - "wants_hint": boolean (True is the user provides a hint)
-        - "wants_end": boolean (True if the user wants to stop the game or end the interaction)
-        - "is_ready": boolean (True if the user indicates they have picked a character and are ready to start, e.g. 'ready', 'I am ready', 'done', 'okay, I picked one')
-
-        Rules:
-        1) ALWAYS respond with a single JSON object and NOTHING ELSE.
-        2) If the meaning is ambiguous, you may set all fields to false.
-        3) Usually, at most ONE of these fields should be true for a clear reply.
-        4) 'is_ready' is only for the initial phase when the robot asks the user to think of a character.
-    """
-}
-
-BACKCHANNELS = [
-    "Hm.",
-    "Okay.",
-    "Interesting.",
-    "Good to know.",
-    "Got it.",
-    "Alright.",
-    "I see.",
-    "Ah, okay.",
-    "Nice.",
-    "Thanks.",
-    "Understood.",
-    "Makes sense.",
-    "Gotcha.",
-    "Cool.",
-    "Right.",
-    "Fair enough.",
-    "That helps.",
-    "Good hint.",
-    "Let me think.",
-    "Alright, noted.",
-]
-
-# End messages
-class GameEndReason:
-    USER_QUIT = "user_quit"
-    CORRECT_GUESS = "correct_guess"
-    MAX_QUESTIONS_REACHED = "max_questions_reached"
-
-# Change messages here
-def get_end_message(end_reason):
-    """Return contextual end message based on how the game ended."""
-    if end_reason == GameEndReason.CORRECT_GUESS:
-        return "Wuhuu, I guessed correctly! Thank you for playing with me!"
-    elif end_reason == GameEndReason.MAX_QUESTIONS_REACHED:
-        return "Oh no! I've used all my questions and couldn't guess correctly. That was a tough one!"
-    else:  # USER_QUIT
-        return "Thank you for playing the Who am I game with me. Goodbye!"
-    
-def get_replay_message():
-    return "Would you like to play another round?"
-
-#Memory
-def create_working_memory():
-    """Working memory for the game."""
-    return {
-        "turns": {},                # "Turn 1": {"furhat_question": "", "user_answer": "","profile_snapshot": [...]  "most_likely_snapshot": [...]}
-        "question_count": 0,        # how many question-type turns we've done
-        "profile": [],              # summary of gathered information
-        "most_likely": [],          # current top candidates
-        "start_intro_done": False,  # LLM intro was already delivered once
-    }
-
-# Logging
-class InteractionLogger:
-    """File logger for prompts, outputs, and user replies."""
-
-    def __init__(self):
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        logs_dir = os.path.join(base_dir, "logs")
-        os.makedirs(logs_dir, exist_ok=True)
-
-        ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        self.path = os.path.join(logs_dir, f"log-{ts}.txt")
-        self.file = open(self.path, "a", encoding="utf-8", buffering=4096)
-        self.t0 = time.monotonic()
-        self._line_count = 0
-
-    def log_line(self, text: str):
-        elapsed = int(time.monotonic() - self.t0)
-        stamp = f"[{elapsed // 60:02d}:{elapsed % 60:02d}]"
-        try:
-            self.file.write(f"{stamp} {text.rstrip()}\n")
-            self._line_count += 1
-            if self._line_count % 10 == 0:
-                self.file.flush()
-        except Exception:
-            pass
-
-    def log_turn(self, turn_key: str, payload: dict):
-        compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        self.log_line(f"{turn_key}:{compact}")
-
-    def close(self):
-        try:
-            self.log_line("[logger] closing")
-            self.file.close()
-        except Exception:
-            pass
-
 
 # Main Game
 class Game:
     """
     Playing Who Am I? using Furhat robot fueled by LLM.
     """
+    
+    @staticmethod
+    def create_working_memory():
+        """Working memory for the game."""
+        return {
+            "turns": {},                # "Turn 1": {"furhat_question": "", "user_answer": "","profile_snapshot": [...]  "most_likely_snapshot": [...]}
+            "question_count": 0,        # how many question-type turns we've done
+            "profile": [],              # summary of gathered information
+            "most_likely": [],          # current top candidates
+            "start_intro_done": False,  # LLM intro was already delivered once
+        }
 
     llm_client = None
     furhat_client = None
-    model = DEFAULT_LLM
+    model = None
     working_memory = create_working_memory()
     logger = None
     context_filler_mode = False
     context_filler_cached = None
+    
 
     @classmethod
-    def init(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None, context_filler=False):
+    def init(cls, config, model, host="127.0.0.1", auth_key=None, context_filler=False):
         load_dotenv(override=True)
-        cls.model = model
-        cls.working_memory = create_working_memory()
+        cls.config = config
+        cls.model = config.DEFAULT_LLM if not model else model
+        cls.working_memory = cls.create_working_memory()
         cls.logger = InteractionLogger()
         cls.context_filler_mode = bool(context_filler)
         cls.context_filler_cached = None
@@ -274,6 +94,28 @@ class Game:
             return False
 
         return True
+    
+    
+    class GameEndReason(Enum):
+        USER_QUIT = "user_quit"
+        CORRECT_GUESS = "correct_guess"
+        MAX_QUESTIONS_REACHED = "max_questions_reached"
+        
+    
+    # Change messages here
+    @classmethod
+    def get_end_message(cls, end_reason):
+        """Return contextual end message based on how the game ended."""
+        if end_reason == cls.GameEndReason.CORRECT_GUESS:
+            return "Wuhuu, I guessed correctly! Thank you for playing with me!"
+        elif end_reason == cls.GameEndReason.MAX_QUESTIONS_REACHED:
+            return "Oh no! I've used all my questions and couldn't guess correctly. That was a tough one!"
+        else:  # USER_QUIT
+            return "Thank you for playing the Who am I game with me. Goodbye!"
+        
+    @staticmethod
+    def get_replay_message():
+        return "Would you like to play another round?"
 
     @classmethod
     def _get_normal_prompt(cls) -> str:
@@ -376,7 +218,7 @@ class Game:
         listen_elapsed = time.monotonic() - t_listen_start
 
         if turn_type == "normal" and (user_utterance or "").strip():
-            if not cls.context_filler_mode and random.random() < BACKCHANNEL_PROB: # added to not use it if using the context_filler
+            if not cls.context_filler_mode and random.random() < cls.config.BACKCHANNEL_PROB: # added to not use it if using the context_filler
                 cls._furhat_backchannel() # random backchannel to fill pause answer - new question while starting next function
 
 
@@ -766,7 +608,7 @@ class Game:
         question_count = cls.working_memory["question_count"]
 
         if wants_end:
-            cls.game_end_reason = GameEndReason.USER_QUIT
+            cls.game_end_reason = cls.GameEndReason.USER_QUIT
             return nr + 1, "end"
 
         if turn_type == "start":
@@ -777,10 +619,10 @@ class Game:
 
         if turn_type == "guess":
             if is_yes:
-                cls.game_end_reason = GameEndReason.CORRECT_GUESS
+                cls.game_end_reason = cls.GameEndReason.CORRECT_GUESS
                 return nr + 1, "end"
-            if question_count >= MAX_TURNS:
-                cls.game_end_reason = GameEndReason.MAX_QUESTIONS_REACHED
+            if question_count >= cls.config.MAX_TURNS:
+                cls.game_end_reason = cls.GameEndReason.MAX_QUESTIONS_REACHED
                 return nr + 1, "end"
             if wants_hint:
                 return nr + 1, "hint"
@@ -795,14 +637,14 @@ class Game:
                 top_likelihood = 0.0
 
         if (
-            top_likelihood >= GUESS_THRESHOLD
+            top_likelihood >= cls.config.GUESS_THRESHOLD
             and turn_type not in ("guess", "end")
             and question_count >= MIN_QUESTIONS_BEFORE_GUESS
         ):
             return nr + 1, "guess"
 
         # Force final guess
-        if question_count >= MAX_TURNS and turn_type not in ("guess", "end"):
+        if question_count >= cls.config.MAX_TURNS and turn_type not in ("guess", "end"):
             return nr + 1, "guess"
 
         # Hint
@@ -822,8 +664,11 @@ class Game:
         }
 
     @classmethod
-    def run(cls, model=DEFAULT_LLM, host="127.0.0.1", auth_key=None, context_filler=False):
-        ok = cls.init(model=model, host=host, auth_key=auth_key, context_filler=context_filler)
+    def run(cls, config, model=None, host="127.0.0.1", auth_key=None, context_filler=False):
+        if model is None:
+            model = cls.config.DEFAULT_LLM
+            
+        ok = cls.init(config=config, model=model, host=host, auth_key=auth_key, context_filler=context_filler)
         if not ok:
             return
 
@@ -844,10 +689,10 @@ class Game:
                     )
 
                 # Say contextual goodbye
-                end_message = get_end_message(cls.game_end_reason)
+                end_message = cls.get_end_message(cls.game_end_reason)
                 cls._furhat_say(end_message)
                 
-                if cls.game_end_reason == GameEndReason.USER_QUIT:
+                if cls.game_end_reason == cls.GameEndReason.USER_QUIT:
                     break
                 
                 # Ask about replay
@@ -883,20 +728,3 @@ class Game:
             # To make sure log is never cut-off.
             if cls.logger:
                 cls.logger.close()
-
-
-# Run
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--auth_key", type=str, default=os.getenv("FURHAT_AUTH_KEY"))
-    parser.add_argument("--model", type=str, default=DEFAULT_LLM)
-    parser.add_argument("--context_filler", action="store_true")
-    args = parser.parse_args()
-
-    Game.run(
-        model=args.model,
-        host=args.host,
-        auth_key=args.auth_key,
-        context_filler=args.context_filler,
-    )
