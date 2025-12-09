@@ -3,6 +3,22 @@
 
 This repository contains a Python-based environment for interacting with the **Furhat Realtime API**.
 
+Quick overview:
+- Game settings:
+    - DEFAULT_LLM, GUESS_THRESHOLD, MAX_TURNS
+    - PROMPTS dict with SYSTEM, START, NORMAL, HINT, GUESS, END, CLASSIFY prompts
+- Working memory:
+    - create_working_memory(): per-turn Q/A and running most_likely candidates
+- Logging:
+    - InteractionLogger: timestamped logs of each turn (LLM input/output + user replies)
+- Main Game class:
+    - Game.init(): loads .env, connects OpenAI + Furhat, resets memory and logger
+    - Game.turn(): one full turn (prompt LLM → Furhat speaks → user listens → LLM classifies user → decide next turn → log)
+    - Game._decide_next_turn(): early-guess logic, MAX_TURNS cap, and "ready" handling
+    - Game.run(): main loop starting in "start" mode and running turns until "end", then says goodbye
+- Run section (CLI):
+    - Parses optional --host, --auth_key, --model and calls Game.run...
+
 ## Project Structure
 ```
 project-root/
