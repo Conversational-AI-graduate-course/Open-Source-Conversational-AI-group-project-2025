@@ -5,6 +5,7 @@ from enum import Enum
 from furhat_realtime_api import FurhatClient
 from .prompts import PROMPTS
 from .logger import InteractionLogger
+from .json_parser import JsonParser
 from .backchannels import BACKCHANNELS
 from dotenv import load_dotenv
 import os
@@ -188,7 +189,11 @@ class Game:
                     {"role": "user", "content": prompt},
                 ]
                 llm_json = cls._call_llm(messages)
-                robot_utterance, profile, most_likely = cls._parse_llm_output(llm_json)
+                
+                
+                robot_utterance, profile, most_likely = JsonParser.parse_llm_output(llm_json)
+                cls.working_memory["profile"] = profile
+                cls.working_memory["most_likely"] = most_likely
                 
                 # Wait for filler to finish
                 filler_thread.join()
@@ -205,7 +210,9 @@ class Game:
                 llm_json = cls._call_llm(messages)
 
                 # 3) parse LLM JSON output -> robot utterance + updated profile and most_likely
-                robot_utterance, profile, most_likely = cls._parse_llm_output(llm_json)
+                robot_utterance, profile, most_likely = JsonParser.parse_llm_output(llm_json)
+                cls.working_memory["profile"] = profile
+                cls.working_memory["most_likely"] = most_likely
 
             # 4) Furhat speaks
             cls._furhat_say(robot_utterance)
@@ -318,8 +325,14 @@ class Game:
         profile = cls.working_memory.get("profile", [])
         if profile:
             lines.append("Character profile (confirmed facts):")
-            lines.append(profile)
-            lines.append("")  # Empty line for spacing
+            for item in profile:
+                if isinstance(item, str):
+                    lines.append(item)
+                elif isinstance(item, dict):
+                    lines.append(f"{item.get('name','?')}: {item.get('why','')}")
+                else:
+                    lines.append(str(item))
+            lines.append("")
 
         most = cls.working_memory.get("most_likely") or []
         if most:
@@ -508,69 +521,6 @@ class Game:
                     state[k] = bool(data[k])
         return state
 
-    @classmethod
-    def _parse_llm_output(cls, data) -> tuple[str, list, list]:
-        """
-        Parse the JSON from the main game LLM into:
-        - robot utterance
-        - profile (character facts)
-        - most_likely (cleaned candidates)
-        """
-        if not isinstance(data, dict):
-            text = str(data)
-            cls.working_memory["profile"] = []
-            cls.working_memory["most_likely"] = []
-            return text, []
-
-        response_text = data.get("response") or ""
-        profile = data.get("profile") or []
-        raw_candidates = data.get("most_likely") or []
-
-        cleaned_candidates = []
-        placeholder_names = {
-            "",
-            "n/a",
-            "na",
-            "none",
-            "unknown",
-            "?",
-            "no character",
-            "human character",
-            "fictional character",
-            "real person",
-            "human",
-            "person",
-        }
-        if isinstance(raw_candidates, list):
-            for item in raw_candidates[:3]:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name", "")).strip()
-                why = str(item.get("why", "")).strip()
-                try:
-                    likelihood = float(item.get("likelihood", 0) or 0)
-                except Exception:
-                    likelihood = 0.0
-
-                if name.lower() in placeholder_names:
-                    continue
-
-                cleaned_candidates.append(
-                    {"name": name, "why": why, "likelihood": likelihood}
-                )
-
-        # Bug fix where all candidates have likelihoods of zero
-        if cleaned_candidates:
-            all_zero = all((c.get("likelihood", 0.0) == 0.0) for c in cleaned_candidates)
-            if all_zero:
-                n = len(cleaned_candidates)
-                if n > 0:
-                    equal_prob = round(1.0 / n, 2)
-                    for c in cleaned_candidates:
-                        c["likelihood"] = equal_prob
-
-        cls.working_memory["most_likely"] = cleaned_candidates
-        return response_text, profile, cleaned_candidates
 
     @classmethod
     def _furhat_say(cls, text: str):
@@ -723,7 +673,6 @@ class Game:
                     break
 
 
-            
         finally:
             # To make sure log is never cut-off.
             if cls.logger:
