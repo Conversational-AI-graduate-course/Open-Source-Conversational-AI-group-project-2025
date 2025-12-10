@@ -25,15 +25,15 @@ project-root/
 │
 ├── src/
 │   └── whoami/
-|       └── backchannels.py
-|       └── config.py
-|       └── game.py
-|       └── json_parser.py
-|       └── logger.py
-│       └── main.py          # Entrypoint script
-|       └── prompts.py
+|       └── backchannels.py      # List of filler/backchannel responses during the game
+|       └── config.py            # Set LLM and Game flow settings
+|       └── game.py              # Core game logic 
+|       └── json_parser.py       # Utility for validating model-generated JSON
+|       └── logger.py            # Utility for debugging and tracing game events
+│       └── main.py              # Entrypoint script
+|       └── prompts.py           # Prompt templates and system messages for the LLM
 │   └── demo.py              # Facial expression demos
-│   └── main-old-version.py
+│   └── main-old-version.py  # Old single file script
 │
 ├── requirements.txt
 ├── Dockerfile
