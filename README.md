@@ -24,8 +24,16 @@ Quick overview:
 project-root/
 │
 ├── src/
+│   └── whoami/
+|       └── backchannels.py
+|       └── config.py
+|       └── game.py
+|       └── json_parser.py
+|       └── logger.py
+│       └── main.py          # Entrypoint script
+|       └── prompts.py
 │   └── demo.py              # Facial expression demos
-│   └── main.py              # Entrypoint script
+│   └── main-old-version.py
 │
 ├── requirements.txt
 ├── Dockerfile
