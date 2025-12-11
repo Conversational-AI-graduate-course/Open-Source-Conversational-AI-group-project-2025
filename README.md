@@ -202,3 +202,4 @@ Feel free to open issues, suggest improvements, or submit PRs.
   [https://github.com/FurhatRobotics/realtime-api-examples/tree/main/python](https://github.com/FurhatRobotics/realtime-api-examples/tree/main/python)
 * Docker documentation: [https://docs.docker.com/](https://docs.docker.com/)
 * OpenAI API (Chat Completion): [https://platform.openai.com/docs/api-reference/chat/create](https://platform.openai.com/docs/api-reference/chat/create)
+* Gemini API: [http://googleapis.github.io/python-genai/](http://googleapis.github.io/python-genai/)
