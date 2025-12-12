@@ -92,7 +92,7 @@ pip install -r requirements.txt
 ### 4. Run the Furhat Script
 
 ```powershell
-python .\src\main.py
+python -m src.whoami.main
 ```
 
 ---
