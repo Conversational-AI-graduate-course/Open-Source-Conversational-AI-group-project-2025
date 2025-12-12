@@ -648,7 +648,7 @@ class Game:
                     
                 # Decide whether to replay
                 if user_state.get("is_yes"):
-                    cls.working_memory = create_working_memory()
+                    cls.working_memory = cls.create_working_memory()
                     cls.working_memory["start_intro_done"] = True
                     cls.context_filler_cached = None
                     cls.game_end_reason = None
