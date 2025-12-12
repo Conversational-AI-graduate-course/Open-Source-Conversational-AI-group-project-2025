@@ -30,6 +30,7 @@ class Game:
             "profile": [],              # summary of gathered information
             "most_likely": [],          # current top candidates
             "start_intro_done": False,  # LLM intro was already delivered once
+            "context_fillers": [],      # memory of N last fillers
         }
 
     llm_client = None
@@ -149,6 +150,7 @@ class Game:
             prompt = PROMPTS.get(turn_type.upper(), PROMPTS["NORMAL"])
         start_intro_done_before = cls.working_memory.get("start_intro_done", False)
         llm_json = None
+        memory_blob_used = None
         if turn_type == "start" and start_intro_done_before:
             robot_utterance = ""
             profile = cls.working_memory.get("profile", [])
@@ -159,6 +161,9 @@ class Game:
             if turn_type == "normal" and cls.context_filler_mode and cls.context_filler_cached:
                 context_filler = cls.context_filler_cached  
                 cls.context_filler_cached = None
+
+                # Store context filler in memory blob
+                cls._remember_context_filler(context_filler)
                 
                 # Start saying the filler in parallel
                 filler_thread = threading.Thread(
@@ -169,6 +174,7 @@ class Game:
                 filler_thread.start()
                 
                 # While filler is being said generate the question 
+                memory_blob_used = cls._format_memory_blob()
                 messages = [
                     {"role": "system", "content": PROMPTS["SYSTEM"]},
                     {"role": "user", "content": cls._format_memory_blob()},
@@ -186,6 +192,7 @@ class Game:
                 time.sleep(0.2) #200 ms pause before question
 
             else:
+                memory_blob_used = cls._format_memory_blob()
                 messages = [
                     {"role": "system", "content": PROMPTS["SYSTEM"]},
                     {"role": "user", "content": cls._format_memory_blob()},
@@ -256,6 +263,8 @@ class Game:
                     "turn_number": nr,
                     "turn_type": turn_type,
                     "prompt_sent_to_llm": prompt,
+                    "memory_blob_sent_to_llm": memory_blob_used,
+                    "context_fillers_memory": list(cls.working_memory.get("context_fillers", [])),
                     "llm_json_output": llm_json,
                     "furhat_question": robot_utterance,
                     "user_answer_raw": user_utterance,
@@ -294,6 +303,22 @@ class Game:
         threading.Thread(target=worker, daemon=True).start()
 
     @classmethod
+    def _remember_context_filler(cls, filler: str, max_items: int = 5, max_chars: int = 120):
+        """Store last N fillers, trimmed. Style-only memory."""
+        if not isinstance(filler, str):
+            return
+        s = " ".join(filler.split()).strip()
+        if not s:
+            return
+        s = s[:max_chars]  # trim to short length
+
+        lst = cls.working_memory.setdefault("context_fillers", [])
+        lst.append(s)
+        # keep only last N
+        if len(lst) > max_items:
+            del lst[:-max_items]
+
+    @classmethod
     def _format_memory_blob(cls) -> str:
         """Represent working memory as short text for the LLM."""
         turns = cls.working_memory.get("turns", {})
@@ -307,6 +332,14 @@ class Game:
                 q = data.get("furhat_question", "")
                 a = data.get("user_answer", "")
                 lines.append(f"- {turn_name}: Q='{q}' A='{a}'")
+
+        fillers = cls.working_memory.get("context_fillers", [])
+        if fillers:
+            lines.append("")
+            lines.append("Previous context fillers (STYLE ONLY; not facts; avoid repeating these phrases):")
+            for i, f in enumerate(fillers[-5:], 1):
+                lines.append(f"- {i}) {f}")
+
 
         profile = cls.working_memory.get("profile", [])
         if profile:
