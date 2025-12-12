@@ -608,7 +608,7 @@ class Game:
         if (
             top_likelihood >= cls.config.GUESS_THRESHOLD
             and turn_type not in ("guess", "end")
-            and question_count >= MIN_QUESTIONS_BEFORE_GUESS
+            and question_count >= cls.config.MIN_QUESTIONS_BEFORE_GUESS
         ):
             return nr + 1, "guess"
 
