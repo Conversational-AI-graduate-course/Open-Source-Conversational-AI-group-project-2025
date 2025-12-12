@@ -632,7 +632,7 @@ class Game:
                     break
                 
                 # Ask about replay
-                replay_message = get_replay_message()
+                replay_message = cls.get_replay_message()
                 cls._furhat_say(replay_message)
                 
                 # Listen and classify reply
