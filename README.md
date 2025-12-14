@@ -1,7 +1,7 @@
 
 # Furhat "Who am I?" Game - Realtime API (Python)
-
-This repository contains a Python-based environment for interacting with the **Furhat Realtime API**.
+This project implements a conversational "Who am I?" guessing game using the **Furhat** social robot. The game leverages large language models (LLMs) to generate questions, interpret user responses, and maintain a dynamic character profile.
+This repository contains a Python-based implementation for interacting with the **Furhat Realtime API**.
 
 Quick overview:
 - Game settings:
